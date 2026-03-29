@@ -263,17 +263,26 @@ class NNSightReplacementModel(LanguageModel):
             param.requires_grad = False
 
     def configure_gradient_flow(self, tracer):
+        def _detach_tree(value):
+            if isinstance(value, torch.Tensor):
+                return value.detach()
+            if isinstance(value, tuple):
+                return tuple(_detach_tree(v) for v in value)
+            if isinstance(value, list):
+                return [_detach_tree(v) for v in value]
+            return value
+
         with tracer.invoke():
             self.embed_location.output.requires_grad = True  # type: ignore
 
         with tracer.invoke():
             for freeze_loc in self.attention_locs:
-                freeze_loc.output = freeze_loc.output.detach()  # type: ignore
+                freeze_loc.output = _detach_tree(freeze_loc.output)  # type: ignore
 
         for layernorm_scale_locs_list in self.layernorm_scale_locs:
             with tracer.invoke():
                 for freeze_loc in layernorm_scale_locs_list:
-                    freeze_loc.output = freeze_loc.output.detach()  # type: ignore
+                    freeze_loc.output = _detach_tree(freeze_loc.output)  # type: ignore
 
     def configure_skip_connection(self, tracer, barrier=None):
         transcoders = (
