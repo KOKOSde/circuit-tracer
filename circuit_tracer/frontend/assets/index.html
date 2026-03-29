@@ -6,6 +6,7 @@
 
 <div class='tooltip tooltip-hidden'></div>
 <div class='nav'></div>
+<div class='input-context'></div>
 <div class='cg'></div>
 
 <link rel='stylesheet' href='./attribution_graph/cg.css'>
@@ -198,7 +199,39 @@ window.init = async function(){
   function render() {
     var m = graphs.find(g => g.slug == visState.slug)
     if (!m) return
-    
+
+    var contextSel = d3.select('.input-context').html('')
+    var hasImage = m.image_path || m.image_url
+    if (m.prompt || hasImage) {
+      contextSel.classed('has-content', true)
+
+      var cardsSel = contextSel.append('div.context-cards')
+
+      var promptCard = cardsSel.append('section.context-card.prompt-card')
+      promptCard.append('div.context-label').text('Prompt')
+      promptCard.append('div.context-prompt').text(m.prompt || '')
+
+      if (hasImage) {
+        var imageCard = cardsSel.append('section.context-card.image-card')
+        imageCard.append('div.context-label').text('Input Image')
+
+        var imageSrc = m.image_url
+        if (!imageSrc && m.image_path) {
+          imageSrc = `/input_image?path=${encodeURIComponent(m.image_path)}`
+        }
+
+        imageCard.append('img.context-image')
+          .attr('src', imageSrc)
+          .attr('alt', m.prompt || 'Input image')
+
+        if (m.image_path) {
+          imageCard.append('div.context-image-path').text(m.image_path)
+        }
+      }
+    } else {
+      contextSel.classed('has-content', false)
+    }
+
     // Handle slider creation/removal dynamically
     if (m && typeof m.node_threshold === 'number') {
       // Create slider if it doesn't exist

@@ -4,11 +4,13 @@ import gzip
 import http.server
 import json
 import logging
+import mimetypes
 import os
 import socketserver
 import threading
 from importlib.resources import files
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 logger = logging.getLogger(__name__)
 logger.propagate = False
@@ -54,6 +56,31 @@ class CircuitGraphHandler(http.server.SimpleHTTPRequestHandler):
 
     def _do_GET(self):
         logger.info(f"Received request for {self.path}")
+
+        if self.path.startswith("/input_image"):
+            parsed = urlparse(self.path)
+            image_path = parse_qs(parsed.query).get("path", [None])[0]
+            if not image_path:
+                self.send_response(400)
+                self.end_headers()
+                return
+
+            local_path = os.path.abspath(image_path)
+            if not os.path.isfile(local_path):
+                self.send_response(404)
+                self.end_headers()
+                return
+
+            content_type, _ = mimetypes.guess_type(local_path)
+            content_type = content_type or "application/octet-stream"
+
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(os.path.getsize(local_path)))
+            self.end_headers()
+            with open(local_path, "rb") as f:
+                self.wfile.write(f.read())
+            return
 
         # Handle data and graph_data requests from local storage
         if self.path.startswith(("/data/", "/graph_data/")):
