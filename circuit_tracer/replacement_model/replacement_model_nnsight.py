@@ -1138,7 +1138,18 @@ class NNSightReplacementModel(LanguageModel):
     def attention_locs(self) -> Iterator[nn.Module]:
         """Dynamically resolve the attention pattern hook locations for every layer."""
         for layer in range(self.cfg.n_layers):  # type: ignore
-            yield self._resolve_attr(self, self._attention_pattern.format(layer=layer))  # type: ignore
+            patterns = self._attention_pattern
+            if isinstance(patterns, str):
+                patterns = [patterns]
+            last_error = None
+            for pattern in patterns:
+                try:
+                    yield self._resolve_attr(self, pattern.format(layer=layer))  # type: ignore
+                    break
+                except AttributeError as exc:
+                    last_error = exc
+            else:
+                raise last_error  # type: ignore[misc]
 
     @property
     def layernorm_scale_locs(self) -> list[Iterator[nn.Module]]:

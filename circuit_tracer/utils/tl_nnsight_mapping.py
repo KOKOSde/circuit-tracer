@@ -7,7 +7,7 @@ class TransformerLens_NNSight_Mapping:
     """Mapping specifying important locations in NNSight models, as well as mapping from TL Hook Points to NNSight locations"""
 
     model_architecture: str  # HuggingFace model architecture
-    attention_location_pattern: str  # Location of the attention patterns
+    attention_location_pattern: str | list[str]  # Location of the attention patterns
     layernorm_scale_location_patterns: list[str]  # Location of the Layernorm denominators
     pre_logit_location: str  # Location immediately before the logits (the location from which we will attribute for logit tokens)
     embed_location: str  # Location of the embedding Module (the location to which we will attribute for embeddings)
@@ -140,17 +140,20 @@ qwen_3_mapping = TransformerLens_NNSight_Mapping(
 
 qwen_3_5_conditional_mapping = TransformerLens_NNSight_Mapping(
     model_architecture="Qwen3_5ForConditionalGeneration",
-    attention_location_pattern="model.language_model.layers[{layer}].linear_attn",
+    attention_location_pattern=[
+        "model.layers[{layer}].self_attn",
+        "model.layers[{layer}].linear_attn",
+    ],
     layernorm_scale_location_patterns=[],
-    pre_logit_location="model.language_model",
-    embed_location="model.language_model.embed_tokens",
-    embed_weight="model.language_model.embed_tokens.weight",
+    pre_logit_location="model",
+    embed_location="model.embed_tokens",
+    embed_weight="model.embed_tokens.weight",
     unembed_weight="lm_head.weight",
     feature_hook_mapping={
-        "hook_resid_mid": ("model.language_model.layers[{layer}].post_attention_layernorm", "input"),
-        "mlp.hook_in": ("model.language_model.layers[{layer}].post_attention_layernorm", "output"),
-        "mlp.hook_out": ("model.language_model.layers[{layer}].mlp", "output"),
-        "hook_mlp_out": ("model.language_model.layers[{layer}].mlp", "output"),
+        "hook_resid_mid": ("model.layers[{layer}].post_attention_layernorm", "input"),
+        "mlp.hook_in": ("model.layers[{layer}].post_attention_layernorm", "output"),
+        "mlp.hook_out": ("model.layers[{layer}].mlp", "output"),
+        "hook_mlp_out": ("model.layers[{layer}].mlp", "output"),
     },
 )
 
