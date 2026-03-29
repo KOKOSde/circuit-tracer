@@ -278,7 +278,11 @@ def convert_nnsight_config_to_transformerlens(config):
     config_dict = config.to_dict()
 
     if "original_architecture" not in config_dict:
-        config_dict["original_architecture"] = config.architectures[0]
+        architectures = getattr(config, "architectures", None) or config_dict.get("architectures")
+        if architectures:
+            config_dict["original_architecture"] = architectures[0]
+        else:
+            config_dict["original_architecture"] = type(config).__name__
     if "tokenizer_name" not in config_dict:
         config_dict["tokenizer_name"] = config.name_or_path
     if "model_name" not in config_dict:
