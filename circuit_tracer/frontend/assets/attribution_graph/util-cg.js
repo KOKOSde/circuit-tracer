@@ -682,6 +682,7 @@ window.utilCg = (function(){
     deDupHClerps,
     tabifyHClerps,
     featureTypeToText,
+    isVisionPromptToken,
   }
 })()
 

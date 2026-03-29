@@ -262,7 +262,7 @@ window.initCgLinkGraph = function({visState, renderAll, data, cgSel}){
     var hasEmbed = mNodes.some(d => d.feature_type == 'embedding' || d.feature_type == 'vision embedding')
     var isVision = mNodes.some(d => d.feature_type == 'vision embedding')
     return {token, ctx_idx, mNodes, hasEmbed, isVision}
-  })
+  }).filter(d => d.hasEmbed || !utilCg.isVisionPromptToken(d.token))
 
   var xTickSel = c.svgBot.appendMany('g.prompt-token', promptTicks)
     .translate(d => [c.x(d.ctx_idx + 1), c.height])

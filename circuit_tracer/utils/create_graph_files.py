@@ -18,6 +18,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+VISION_PROMPT_TOKENS = {"<|vision_start|>", "<|vision_end|>", "<|image_pad|>"}
+MAX_VISION_EMBED_NODES = 24
+
 
 def load_graph_data(file_path) -> Graph:
     """Load graph data from a PyTorch file."""
@@ -82,7 +85,11 @@ def create_nodes(graph: Graph, node_mask, tokenizer, cumulative_scores):
     return nodes
 
 
-def create_used_nodes_and_edges(graph: Graph, nodes, edge_mask):
+def _is_vision_prompt_token(token: str) -> bool:
+    return token in VISION_PROMPT_TOKENS
+
+
+def create_used_nodes_and_edges(graph: Graph, nodes, edge_mask, tokenizer):
     """Filter to only used nodes and create edges."""
     start_time = time.time()
     edges = edge_mask.numpy()
@@ -101,10 +108,39 @@ def create_used_nodes_and_edges(graph: Graph, nodes, edge_mask):
         connected_ids.add(edge["target"])
 
     nodes_before = len(nodes)
+    prompt_tokens = [tokenizer.decode(t) for t in graph.input_tokens]
+    vision_embedding_nodes = []
+    always_keep_ids = set()
+
+    for node in nodes.values():
+        if node.feature_type == "logit":
+            always_keep_ids.add(node.node_id)
+            continue
+
+        if node.feature_type != "embedding":
+            continue
+
+        token = prompt_tokens[node.ctx_idx]
+        if _is_vision_prompt_token(token):
+            vision_embedding_nodes.append(node)
+        else:
+            always_keep_ids.add(node.node_id)
+
+    top_vision_ids = {
+        node.node_id
+        for node in sorted(
+            vision_embedding_nodes,
+            key=lambda node: abs(node.influence) if node.influence is not None else 0.0,
+            reverse=True,
+        )[:MAX_VISION_EMBED_NODES]
+    }
+
     used_nodes = [
         node
         for node in nodes.values()
-        if node.node_id in connected_ids or node.feature_type in ["embedding", "vision embedding", "logit"]
+        if node.node_id in connected_ids
+        or node.node_id in always_keep_ids
+        or node.node_id in top_vision_ids
     ]
     nodes_after = len(used_nodes)
     logger.info(f"Filtered {nodes_before - nodes_after} nodes")
@@ -205,7 +241,7 @@ def create_graph_files(
 
     tokenizer = AutoTokenizer.from_pretrained(graph.cfg.tokenizer_name)
     nodes = create_nodes(graph, node_mask, tokenizer, cumulative_scores)
-    used_nodes, used_edges = create_used_nodes_and_edges(graph, nodes, edge_mask)
+    used_nodes, used_edges = create_used_nodes_and_edges(graph, nodes, edge_mask, tokenizer)
     model = build_model(graph, used_nodes, used_edges, slug, scan, node_threshold, tokenizer)
 
     # Write the output locally
