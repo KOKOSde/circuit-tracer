@@ -43,7 +43,7 @@ window.initCgFeatureDetail = async function({visState, renderAll, data, cgSel}){
       visState.isHideLayer ? `#F${d.featureIndex}` : 
       `${utilCg.layerLocationLabel(d.layer, d.probe_location_idx)}/${featIdx}`
 
-    if (d.isError || d.feature_type == 'embedding' || d.feature_type == 'logit'){
+    if (d.isError || ['embedding', 'vision embedding', 'logit'].includes(d.feature_type)){
       if (d.isError) addLogits(d)
       if (d.feature_type=='logit') addEmbeddings(d)
 

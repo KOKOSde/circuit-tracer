@@ -239,7 +239,7 @@ window.initCgLinkGraph = function({visState, renderAll, data, cgSel}){
 
 
     nodeSel
-      .at({fill: '#fff'})
+      .at({fill: d => d.feature_type == 'vision embedding' ? '#b9ecff' : '#fff'})
       .filter(d => d.tmpClickedLink?.tmpColor)
       .at({fill: d => d.tmpClickedLink.tmpColor})
       .raise()
@@ -259,8 +259,9 @@ window.initCgLinkGraph = function({visState, renderAll, data, cgSel}){
   var promptTicks = data.metadata.prompt_tokens.slice(earliestCtxWithNodes).map((token, i) =>{
     var ctx_idx = i + earliestCtxWithNodes 
     var mNodes = nodes.filter(d => d.ctx_idx == ctx_idx)
-    var hasEmbed = mNodes.some(d => d.feature_type == 'embedding')
-    return {token, ctx_idx, mNodes, hasEmbed}
+    var hasEmbed = mNodes.some(d => d.feature_type == 'embedding' || d.feature_type == 'vision embedding')
+    var isVision = mNodes.some(d => d.feature_type == 'vision embedding')
+    return {token, ctx_idx, mNodes, hasEmbed, isVision}
   })
 
   var xTickSel = c.svgBot.appendMany('g.prompt-token', promptTicks)
@@ -268,7 +269,7 @@ window.initCgLinkGraph = function({visState, renderAll, data, cgSel}){
   
   xTickSel.append('path').at({d: `M0,0v${-c.height}`, stroke: '#fff',strokeWidth: 1})
   xTickSel.filter(d => d.hasEmbed).append('path').at({
-    stroke: '#B0AEA6',
+    stroke: d => d.isVision ? '#6ab9df' : '#B0AEA6',
     d: `M-${padR + 3.5},${-c.y.bandwidth()/2 + 6}V${8}`,
   })
   
@@ -281,6 +282,7 @@ window.initCgLinkGraph = function({visState, renderAll, data, cgSel}){
       transform: 'rotate(-45)',
       dominantBaseline: 'middle',
       fontSize: 12,
+      fill: d => d.isVision ? '#216b8d' : '#777',
       // fontSize: (d, i) => c.x(i+1) - c.x(i) < 15 ? 9 : 14,
     })
   

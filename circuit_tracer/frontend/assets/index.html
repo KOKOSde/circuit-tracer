@@ -202,7 +202,7 @@ window.init = async function(){
 
     var contextSel = d3.select('.input-context').html('')
     var hasImage = m.image_path || m.image_url
-    if (m.prompt || hasImage) {
+    if (m.prompt || hasImage || m.model_output) {
       contextSel.classed('has-content', true)
 
       var cardsSel = contextSel.append('div.context-cards')
@@ -210,6 +210,16 @@ window.init = async function(){
       var promptCard = cardsSel.append('section.context-card.prompt-card')
       promptCard.append('div.context-label').text('Prompt')
       promptCard.append('div.context-prompt').text(m.prompt || '')
+
+      if (m.model_output) {
+        var outputCard = cardsSel.append('section.context-card.output-card')
+        outputCard.append('div.context-label').text('Model Output')
+        outputCard.append('div.context-output').text(m.model_output)
+        if (m.model_output_prob !== undefined && m.model_output_prob !== null) {
+          outputCard.append('div.context-output-prob')
+            .text(`Top-token probability: ${(+m.model_output_prob).toFixed(3)}`)
+        }
+      }
 
       if (hasImage) {
         var imageCard = cardsSel.append('section.context-card.image-card')

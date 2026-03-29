@@ -61,7 +61,11 @@ window.initCg = async function (sel, slug, {clickedId, clickedIdCb, isModal, isG
   var renderAll = util.initRenderAll(['hClerpUpdate', 'clickedId', 'hiddenIds', 'pinnedIds', 'linkType', 'isShowAllLinks', 'features', 'isSyncEnabled', 'shouldSortByWeight', 'hoveredId'])
 
   function colorNodes() {
-    data.nodes.forEach(d => d.nodeColor = '#fff')
+    data.nodes.forEach(d => {
+      if (d.feature_type == 'vision embedding') d.nodeColor = '#b9ecff'
+      else if (d.feature_type == 'logit') d.nodeColor = '#f2efe7'
+      else d.nodeColor = '#fff'
+    })
   }
   colorNodes()
 

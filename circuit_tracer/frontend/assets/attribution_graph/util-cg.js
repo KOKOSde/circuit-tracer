@@ -187,6 +187,10 @@ window.utilCg = (function(){
     return token.replaceAll("\n", "⏎").replaceAll("\t", "→").replaceAll("\r", "↵")
   }
 
+  function isVisionPromptToken(token) {
+    return token == '<|vision_start|>' || token == '<|vision_end|>' || token == '<|image_pad|>'
+  }
+
   // Decorates and mutates data.json
   // - Adds pointers between node and links
   // - Deletes very common features
@@ -241,6 +245,8 @@ window.utilCg = (function(){
           d.clerp = `Err: mlp “${util.ppToken(data.metadata.prompt_tokens[d.ctx_idx])}"`
         }
       } else if (d.feature_type == 'embedding'){
+        d.isVisionToken = isVisionPromptToken(data.metadata.prompt_tokens[d.ctx_idx])
+        if (d.isVisionToken) d.feature_type = 'vision embedding'
         d.clerp = `Emb: “${util.ppToken(data.metadata.prompt_tokens[d.ctx_idx])}"`
       }
 
@@ -644,6 +650,7 @@ window.utilCg = (function(){
   function featureTypeToText(type){
     if (type == 'logit') return '■'
     if (type == 'embedding') return '■'
+    if (type == 'vision embedding') return '▣'
     if (type === 'mlp reconstruction error') return '◆'
     return '●'
     

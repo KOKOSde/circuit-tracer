@@ -104,7 +104,7 @@ def create_used_nodes_and_edges(graph: Graph, nodes, edge_mask):
     used_nodes = [
         node
         for node in nodes.values()
-        if node.node_id in connected_ids or node.feature_type in ["embedding", "logit"]
+        if node.node_id in connected_ids or node.feature_type in ["embedding", "vision embedding", "logit"]
     ]
     nodes_after = len(used_nodes)
     logger.info(f"Filtered {nodes_before - nodes_after} nodes")
@@ -137,6 +137,10 @@ def build_model(graph: Graph, used_nodes, used_edges, slug, scan, node_threshold
         input_mode=(graph.input_metadata or {}).get("input_mode"),
         image_path=(graph.input_metadata or {}).get("image_path"),
         image_url=(graph.input_metadata or {}).get("image_url"),
+        model_output=(graph.input_metadata or {}).get("model_output"),
+        model_output_prob=float((graph.input_metadata or {}).get("model_output_prob"))
+        if (graph.input_metadata or {}).get("model_output_prob") is not None
+        else None,
         node_threshold=node_threshold,
     )
 

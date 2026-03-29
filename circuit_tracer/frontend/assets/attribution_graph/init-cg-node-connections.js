@@ -90,9 +90,9 @@ window.initCgNodeConnections = function({visState, renderAll, data, cgSel}){
     trSel.append('td').text(d => d.str).at({title: d => d.str == '↓' ? 'cur token' : 'prev token'})
     trSel.appendMany('td', d => {
         var rv = [
-          d.links.filter(e => !e.sourceNode.isError && e.sourceNode.feature_type != 'embedding'),
+          d.links.filter(e => !e.sourceNode.isError && !['embedding', 'vision embedding'].includes(e.sourceNode.feature_type)),
           d.links.filter(e => e.sourceNode.isError),
-          d.links.filter(e => e.sourceNode.feature_type == 'embedding'),
+          d.links.filter(e => ['embedding', 'vision embedding'].includes(e.sourceNode.feature_type)),
         ]
 
         if (rv.flat().length != d.links.length) console.error("Non-feature/error/embedding node present")

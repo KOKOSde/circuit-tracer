@@ -302,6 +302,16 @@ def _run_attribution(
             "input_mode": prepared.input_mode,
             **({"image_path": prepared.image_path} if prepared.image_path else {}),
             **({"image_url": prepared.image_url} if prepared.image_url else {}),
+            **(
+                {"model_output": targets.logit_targets[0].token_str}
+                if targets.logit_targets and targets.logit_targets[0].token_str
+                else {}
+            ),
+            **(
+                {"model_output_prob": f"{targets.logit_probabilities[0].item():.6f}"}
+                if len(targets.logit_probabilities) > 0
+                else {}
+            ),
             **prepared.metadata,
         }
         or None,
