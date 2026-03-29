@@ -234,7 +234,7 @@ class NNSightReplacementModel(LanguageModel):
         # property accessors which resolve the hooks on-demand inside the
         # appropriate trace context.
         # ------------------------------------------------------------------
-        nnsight_config = get_mapping(self.config.architectures[0])  # type: ignore
+        nnsight_config = get_mapping(self.cfg.original_architecture)
 
         self._feature_input_pattern, self._feature_input_io = nnsight_config.feature_hook_mapping[
             transcoder_set.feature_input_hook

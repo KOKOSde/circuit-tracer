@@ -279,6 +279,15 @@ def convert_nnsight_config_to_transformerlens(config):
 
     if "original_architecture" not in config_dict:
         architectures = getattr(config, "architectures", None) or config_dict.get("architectures")
+        if not architectures:
+            model_name = getattr(config, "name_or_path", None) or getattr(config, "_name_or_path", None)
+            if model_name:
+                try:
+                    from transformers import AutoConfig
+
+                    architectures = AutoConfig.from_pretrained(model_name).architectures
+                except Exception:
+                    architectures = None
         if architectures:
             config_dict["original_architecture"] = architectures[0]
         else:
