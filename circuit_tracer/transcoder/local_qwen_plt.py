@@ -28,6 +28,7 @@ class LayerNormSingleLayerTranscoder(SingleLayerTranscoder):
         layer_idx: int,
         *,
         use_input_ln: bool = False,
+        attribution_topk: int | None = 16,
         device: torch.device | None = None,
         dtype: torch.dtype = torch.bfloat16,
     ):
@@ -46,6 +47,7 @@ class LayerNormSingleLayerTranscoder(SingleLayerTranscoder):
         else:
             self.register_parameter("ln_weight", None)
             self.register_parameter("ln_bias", None)
+        self.attribution_topk = attribution_topk
 
     def _normalize_input(self, input_acts: torch.Tensor) -> torch.Tensor:
         if self.ln_weight is None and self.ln_bias is None:
@@ -63,7 +65,22 @@ class LayerNormSingleLayerTranscoder(SingleLayerTranscoder):
 
     def encode_sparse(self, input_acts, zero_positions: slice = slice(0, 1)):
         normalized = self._normalize_input(input_acts)
-        return super().encode_sparse(normalized, zero_positions=zero_positions)
+        W_enc = self.W_enc
+        pre_acts = F.linear(normalized.to(W_enc.dtype), W_enc, self.b_enc)
+        acts = self.activation_function(pre_acts)
+        acts[zero_positions] = 0
+
+        if self.attribution_topk is not None and 0 < self.attribution_topk < acts.shape[-1]:
+            k = min(self.attribution_topk, acts.shape[-1])
+            topk_vals, topk_idx = torch.topk(acts, k=k, dim=-1)
+            masked = torch.zeros_like(acts)
+            masked.scatter_(dim=-1, index=topk_idx, src=topk_vals)
+            acts = masked
+
+        sparse_acts = acts.to_sparse()
+        _, feat_idx = sparse_acts.indices()
+        active_encoders = W_enc[feat_idx]
+        return sparse_acts, active_encoders
 
     def to_safetensors(self, save_path: str):
         state_dict = {
@@ -89,6 +106,7 @@ def _placeholder_transcoder(
     device: torch.device,
     dtype: torch.dtype,
     use_input_ln: bool = True,
+    attribution_topk: int | None = 16,
 ) -> LayerNormSingleLayerTranscoder:
     transcoder = LayerNormSingleLayerTranscoder(
         d_model=d_model,
@@ -96,6 +114,7 @@ def _placeholder_transcoder(
         activation_function=F.relu,
         layer_idx=layer,
         use_input_ln=use_input_ln,
+        attribution_topk=attribution_topk,
         device=device,
         dtype=dtype,
     )
@@ -115,6 +134,7 @@ def load_local_qwen_plt_checkpoint(
     path: str,
     *,
     layer: int | None = None,
+    attribution_topk: int | None = 16,
     device: torch.device | None = None,
     dtype: torch.dtype = torch.float32,
 ) -> LayerNormSingleLayerTranscoder:
@@ -134,6 +154,7 @@ def load_local_qwen_plt_checkpoint(
         activation_function=F.relu,
         layer_idx=layer_idx,
         use_input_ln=use_input_ln,
+        attribution_topk=attribution_topk,
         device=device,
         dtype=dtype,
     )
@@ -159,6 +180,7 @@ def load_local_qwen_plt_transcoder_set(
     feature_input_hook: str = "mlp.hook_in",
     feature_output_hook: str = "mlp.hook_out",
     scan: str | None = None,
+    attribution_topk: int | None = 16,
     device: torch.device | None = None,
     dtype: torch.dtype = torch.float32,
     allow_missing: bool = True,
@@ -179,7 +201,12 @@ def load_local_qwen_plt_transcoder_set(
     if not checkpoints:
         raise FileNotFoundError(f"No local Qwen PLT checkpoints found in {checkpoint_dir}")
 
-    probe = load_local_qwen_plt_checkpoint(next(iter(checkpoints.values())), device=device, dtype=dtype)
+    probe = load_local_qwen_plt_checkpoint(
+        next(iter(checkpoints.values())),
+        attribution_topk=attribution_topk,
+        device=device,
+        dtype=dtype,
+    )
     d_model = probe.d_model
     d_transcoder = probe.d_transcoder
 
@@ -190,6 +217,7 @@ def load_local_qwen_plt_transcoder_set(
             transcoders[layer] = load_local_qwen_plt_checkpoint(
                 ckpt,
                 layer=layer,
+                attribution_topk=attribution_topk,
                 device=device,
                 dtype=dtype,
             )
@@ -208,6 +236,7 @@ def load_local_qwen_plt_transcoder_set(
             layer,
             d_model=d_model,
             d_transcoder=d_transcoder,
+            attribution_topk=attribution_topk,
             device=device,
             dtype=dtype,
         )
