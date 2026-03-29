@@ -138,6 +138,22 @@ qwen_3_mapping = TransformerLens_NNSight_Mapping(
     },
 )
 
+qwen_3_5_conditional_mapping = TransformerLens_NNSight_Mapping(
+    model_architecture="Qwen3_5ForConditionalGeneration",
+    attention_location_pattern="model.language_model.layers[{layer}].linear_attn",
+    layernorm_scale_location_patterns=[],
+    pre_logit_location="model.language_model",
+    embed_location="model.language_model.embed_tokens",
+    embed_weight="model.language_model.embed_tokens.weight",
+    unembed_weight="lm_head.weight",
+    feature_hook_mapping={
+        "hook_resid_mid": ("model.language_model.layers[{layer}].post_attention_layernorm", "input"),
+        "mlp.hook_in": ("model.language_model.layers[{layer}].post_attention_layernorm", "output"),
+        "mlp.hook_out": ("model.language_model.layers[{layer}].mlp", "output"),
+        "hook_mlp_out": ("model.language_model.layers[{layer}].mlp", "output"),
+    },
+)
+
 
 gpt_oss_mapping = TransformerLens_NNSight_Mapping(
     model_architecture="GptOssForCausalLM",
@@ -180,6 +196,7 @@ def get_mapping(model_architecture: str) -> TransformerLens_NNSight_Mapping:
             gemma_3_conditional_mapping,
             llama_3_mapping,
             qwen_3_mapping,
+            qwen_3_5_conditional_mapping,
             gpt_oss_mapping,
         ]
     }
