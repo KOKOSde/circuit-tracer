@@ -7,6 +7,9 @@ class Metadata(BaseModel):
     transcoder_list: list[str]
     prompt_tokens: list[str]
     prompt: str
+    input_mode: str | None = None
+    image_path: str | None = None
+    image_url: str | None = None
     node_threshold: float | None = None
     schema_version: int | None = 1
 

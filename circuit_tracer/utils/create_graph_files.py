@@ -134,6 +134,9 @@ def build_model(graph: Graph, used_nodes, used_edges, slug, scan, node_threshold
         transcoder_list=transcoder_list,
         prompt_tokens=[tokenizer.decode(t) for t in graph.input_tokens],
         prompt=graph.input_string,
+        input_mode=(graph.input_metadata or {}).get("input_mode"),
+        image_path=(graph.input_metadata or {}).get("image_path"),
+        image_url=(graph.input_metadata or {}).get("image_url"),
         node_threshold=node_threshold,
     )
 

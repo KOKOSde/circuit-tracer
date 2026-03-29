@@ -36,10 +36,11 @@ from circuit_tracer.attribution.targets import (
 from circuit_tracer.graph import Graph, compute_partial_influences
 from circuit_tracer.replacement_model.replacement_model_nnsight import NNSightReplacementModel
 from circuit_tracer.utils.disk_offload import offload_modules
+from circuit_tracer.vlm_inputs import VLMInput
 
 
 def attribute(
-    prompt: str | torch.Tensor | list[int],
+    prompt: str | torch.Tensor | list[int] | VLMInput | dict,
     model: NNSightReplacementModel,
     *,
     attribution_targets: Sequence[str] | Sequence[TargetSpec] | torch.Tensor | None = None,
@@ -132,9 +133,10 @@ def _run_attribution(
     # Phase 0: precompute
     logger.info("Phase 0: Precomputing activations and vectors")
     phase_start = time.time()
-    input_ids = model.ensure_tokenized(prompt)
+    prepared = model.prepare_inputs(prompt)
+    input_ids = prepared.input_ids
 
-    ctx = model.setup_attribution(input_ids)
+    ctx = model.setup_attribution(prepared)
     activation_matrix = ctx.activation_matrix
 
     logger.info(f"Precomputation completed in {time.time() - phase_start:.2f}s")
@@ -147,7 +149,7 @@ def _run_attribution(
     logger.info("Phase 1: Running forward pass")
     phase_start = time.time()
     with model.trace() as tracer:
-        with tracer.invoke(input_ids.expand(batch_size, -1)):
+        with model.invoke_inputs(tracer, model._repeat_trace_inputs(prepared.trace_inputs, batch_size)):
             pass
 
         detach_barrier = tracer.barrier(2)
@@ -285,7 +287,7 @@ def _run_attribution(
     full_edge_matrix[-n_logits:] = edge_matrix[actual_max_feature_nodes:]
 
     graph = Graph(
-        input_string=model.tokenizer.decode(input_ids),
+        input_string=prepared.prompt_text,
         input_tokens=input_ids,
         logit_targets=targets.logit_targets,
         logit_probabilities=targets.logit_probabilities,
@@ -296,6 +298,13 @@ def _run_attribution(
         adjacency_matrix=full_edge_matrix.detach(),
         cfg=model.config,
         scan=model.scan,
+        input_metadata={
+            "input_mode": prepared.input_mode,
+            **({"image_path": prepared.image_path} if prepared.image_path else {}),
+            **({"image_url": prepared.image_url} if prepared.image_url else {}),
+            **prepared.metadata,
+        }
+        or None,
     )
 
     total_time = time.time() - start_time

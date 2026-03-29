@@ -39,6 +39,11 @@ def main():
     )
     attr_parser.add_argument("-p", "--prompt", required=True, help="Input prompt text to analyze.")
     attr_parser.add_argument(
+        "--image",
+        type=str,
+        help="Optional local image path for multimodal attribution with VLM backends.",
+    )
+    attr_parser.add_argument(
         "-o",
         "--graph_output_path",
         help=(
@@ -181,6 +186,9 @@ def run_attribution(args, parser):
             "(--slug and --graph_file_dir)"
         )
 
+    if args.image and args.backend != "nnsight":
+        parser.error("--image currently requires --backend nnsight")
+
     # Ensure graph output directory exists if needed
     if create_graph_files_enabled:
         os.makedirs(args.graph_file_dir, exist_ok=True)
@@ -202,6 +210,8 @@ def run_attribution(args, parser):
     logging.info(f"Generating attribution graph for model: {args.model}")
     logging.info(f"Loading model with dtype: {dtype}")
     logging.info(f'Input prompt: "{args.prompt}"')
+    if args.image:
+        logging.info(f"Input image: {args.image}")
     if args.graph_output_path:
         logging.info(f"Output will be saved to: {args.graph_output_path}")
     logging.info(
@@ -213,6 +223,7 @@ def run_attribution(args, parser):
     from circuit_tracer import ReplacementModel, attribute
     from circuit_tracer.utils.create_graph_files import create_graph_files
     from circuit_tracer.utils.hf_utils import load_transcoder_from_hub
+    from circuit_tracer.vlm_inputs import VLMInput
 
     transcoder, config = load_transcoder_from_hub(
         args.transcoder_set,
@@ -229,8 +240,9 @@ def run_attribution(args, parser):
     )
 
     logging.info("Running attribution...")
+    prompt_input = args.prompt if not args.image else VLMInput(prompt=args.prompt, image=args.image)
     graph = attribute(
-        prompt=args.prompt,
+        prompt=prompt_input,
         model=model_instance,  # type:ignore
         max_n_logits=args.max_n_logits,
         desired_logit_prob=args.desired_logit_prob,

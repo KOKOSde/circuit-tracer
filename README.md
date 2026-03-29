@@ -52,6 +52,8 @@ By default, `circuit-tracer` creates a `ReplacementModel` that inherits from the
 
 Creating a `ReplacementModel` with `backend='nnsight'` will create an `nnsight`-backed `ReplacementModel` that inherits from its `LanguageModel` class; this supports most HuggingFace models. That is, you can create an `nnsight` `ReplacementModel` using `ReplacementModel.from_pretrained(model_name, backend='nnsight')`. Note, however, that the `nnsight` backend is still experimental: it is slower and less memory-efficient, and may not provide all of the functionality of the `TransformerLens` version.
 
+The `nnsight` backend also supports a multimodal CLI path via `--image`. In that mode, attribution still traces the language-model feature graph conditioned on the image; it does not yet expose vision-tower features as first-class graph nodes.
+
 ### Caching
 In order to use the `lazy_decoder` and `lazy_encoder` options on transcoders, they must be stored in `circuit-tracer`-compatible format. While many transcoders have been uploaded in that format to HuggingFace, this requires large amounts of storage. `circuit-tracer` now supports instead creating a local cache of models, by calling e.g.
 
@@ -108,6 +110,7 @@ You must set `--slug` and `--graph_file_dir`, or `--graph_output_path`, or both!
 
 **Attribution Parameters:**
 - `--model` (`-m`): Model architecture (auto-inferred for `gemma` and `llama` presets)
+- `--image`: Optional local image path for multimodal attribution with `--backend nnsight`
 - `--max_n_logits` (default: 10): Maximum number of logit nodes to attribute from
 - `--desired_logit_prob` (default: 0.95): Cumulative probability threshold for top logits
 - `--batch_size` (default: 256): Batch size for backward passes
@@ -141,6 +144,19 @@ circuit-tracer attribute \
   --prompt "The capital of France is" \
   --transcoder_set llama \
   --graph_output_path france_capital.pt
+```
+
+**Multimodal attribution with a VLM (`nnsight` backend):**
+```
+circuit-tracer attribute \
+  --backend nnsight \
+  --model Qwen/Qwen2.5-VL-7B-Instruct \
+  --prompt "Describe this image." \
+  --image ./example.jpg \
+  --transcoder_set your-org/your-vlm-transcoders \
+  --slug qwen-vlm-demo \
+  --graph_file_dir ./graph_files \
+  --server
 ```
 
 ### Graph Annotation
