@@ -55,6 +55,15 @@ def main():
         help="Optional local Qwen PLT checkpoint directory used to generate hovered feature spatial maps.",
     )
     attr_parser.add_argument(
+        "--local_transcoder_max_layer",
+        type=int,
+        default=None,
+        help=(
+            "Optional maximum local Qwen PLT layer index to load. "
+            "For example, 7 loads layers 0-7 from a local checkpoint directory."
+        ),
+    )
+    attr_parser.add_argument(
         "--neutral_prompt",
         type=str,
         default="Describe what you see in this image.",
@@ -280,6 +289,7 @@ def run_attribution(args, parser):
             parser.error("--model must be specified when using a local transcoder directory")
         transcoder = load_local_qwen_plt_transcoder_set(
             str(transcoder_arg),
+            n_layers=None if args.local_transcoder_max_layer is None else args.local_transcoder_max_layer + 1,
             attribution_topk=16,
             device=torch.device("cpu"),
             dtype=dtype,
@@ -346,6 +356,7 @@ def run_attribution(args, parser):
                 image_path=args.image,
                 graph_json_path=graph_json_path,
                 transcoder_dir=feature_dir,
+                transcoder_max_layer=args.local_transcoder_max_layer,
                 neutral_prompt=args.neutral_prompt,
                 seed=args.seed,
             )

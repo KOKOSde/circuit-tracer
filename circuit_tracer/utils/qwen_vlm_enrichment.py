@@ -388,10 +388,11 @@ def parse_graph_feature_keys(graph_json_path: Path) -> list[tuple[int, int]]:
     return sorted(feature_keys)
 
 
-def discover_transcoder_layers(transcoder_dir: Path) -> list[int]:
+def discover_transcoder_layers(transcoder_dir: Path, max_layer: int | None = None) -> list[int]:
+    upper = 128 if max_layer is None else max_layer + 1
     return [
         layer
-        for layer in range(128)
+        for layer in range(upper)
         if (transcoder_dir / f"transcoder_L{layer}_best.pt").exists()
         or (transcoder_dir / f"transcoder_L{layer}.pt").exists()
     ]
@@ -569,6 +570,7 @@ def enrich_qwen_vlm_graph(
     image_path: str,
     graph_json_path: str,
     transcoder_dir: str | None = None,
+    transcoder_max_layer: int | None = None,
     neutral_prompt: str = DEFAULT_NEUTRAL_PROMPT,
     seed: int = 0,
 ) -> dict:
@@ -602,7 +604,7 @@ def enrich_qwen_vlm_graph(
     feature_heatmaps: dict[str, dict] = {}
     if transcoder_dir:
         transcoder_root = Path(transcoder_dir)
-        plt_layers = discover_transcoder_layers(transcoder_root)
+        plt_layers = discover_transcoder_layers(transcoder_root, max_layer=transcoder_max_layer)
         if plt_layers:
             plt_payloads = {layer: load_plt_encoder_payload(transcoder_root, layer) for layer in plt_layers}
             spatial_cache = prepare_prompt_cache(
