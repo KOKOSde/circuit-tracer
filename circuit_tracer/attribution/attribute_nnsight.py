@@ -36,10 +36,40 @@ from circuit_tracer.attribution.targets import (
 from circuit_tracer.graph import Graph, compute_partial_influences
 from circuit_tracer.replacement_model.replacement_model_nnsight import NNSightReplacementModel
 from circuit_tracer.utils.disk_offload import offload_modules
+from circuit_tracer.vlm_inputs import VLMInput
+
+
+def _select_display_output(targets: AttributionTargets) -> tuple[str | None, str | None]:
+    """Pick the first researcher-meaningful predicted token for UI display.
+
+    Attribution works on next-token logits, which for chat models often rank control
+    tokens like ``<|im_start|>`` highest. For the frontend output card, prefer the
+    first non-control token from the existing salient targets and fall back to the
+    top target when all candidates are special.
+    """
+
+    def is_control_token(token: str) -> bool:
+        stripped = token.strip()
+        return (
+            not stripped
+            or stripped in {"assistant", "user", "system"}
+            or (stripped.startswith("<|") and stripped.endswith("|>"))
+        )
+
+    fallback: tuple[str | None, str | None] = (None, None)
+    for target, prob in zip(targets.logit_targets, targets.logit_probabilities, strict=False):
+        token = target.token_str
+        prob_str = f"{prob.item():.6f}"
+        if fallback == (None, None) and token:
+            fallback = (token, prob_str)
+        if token and not is_control_token(token):
+            return token, prob_str
+
+    return fallback
 
 
 def attribute(
-    prompt: str | torch.Tensor | list[int],
+    prompt: str | torch.Tensor | list[int] | VLMInput | dict,
     model: NNSightReplacementModel,
     *,
     attribution_targets: Sequence[str] | Sequence[TargetSpec] | torch.Tensor | None = None,
@@ -132,9 +162,10 @@ def _run_attribution(
     # Phase 0: precompute
     logger.info("Phase 0: Precomputing activations and vectors")
     phase_start = time.time()
-    input_ids = model.ensure_tokenized(prompt)
+    prepared = model.prepare_inputs(prompt)
+    input_ids = prepared.input_ids
 
-    ctx = model.setup_attribution(input_ids)
+    ctx = model.setup_attribution(prepared)
     activation_matrix = ctx.activation_matrix
 
     logger.info(f"Precomputation completed in {time.time() - phase_start:.2f}s")
@@ -147,7 +178,7 @@ def _run_attribution(
     logger.info("Phase 1: Running forward pass")
     phase_start = time.time()
     with model.trace() as tracer:
-        with tracer.invoke(input_ids.expand(batch_size, -1)):
+        with model.invoke_inputs(tracer, model._repeat_trace_inputs(prepared.trace_inputs, batch_size)):
             pass
 
         detach_barrier = tracer.barrier(2)
@@ -284,8 +315,10 @@ def _run_attribution(
     full_edge_matrix[:actual_max_feature_nodes] = edge_matrix[:actual_max_feature_nodes]
     full_edge_matrix[-n_logits:] = edge_matrix[actual_max_feature_nodes:]
 
+    display_output, display_output_prob = _select_display_output(targets)
+
     graph = Graph(
-        input_string=model.tokenizer.decode(input_ids),
+        input_string=prepared.prompt_text,
         input_tokens=input_ids,
         logit_targets=targets.logit_targets,
         logit_probabilities=targets.logit_probabilities,
@@ -296,6 +329,15 @@ def _run_attribution(
         adjacency_matrix=full_edge_matrix.detach(),
         cfg=model.config,
         scan=model.scan,
+        input_metadata={
+            "input_mode": prepared.input_mode,
+            **({"image_path": prepared.image_path} if prepared.image_path else {}),
+            **({"image_url": prepared.image_url} if prepared.image_url else {}),
+            **({"model_output": display_output} if display_output else {}),
+            **({"model_output_prob": display_output_prob} if display_output_prob else {}),
+            **prepared.metadata,
+        }
+        or None,
     )
 
     total_time = time.time() - start_time

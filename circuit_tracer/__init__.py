@@ -4,11 +4,13 @@ if TYPE_CHECKING:
     from circuit_tracer.attribution.attribute import attribute
     from circuit_tracer.graph import Graph
     from circuit_tracer.replacement_model import ReplacementModel
+    from circuit_tracer.vlm_inputs import VLMInput
 
 __all__ = [
     "ReplacementModel",
     "Graph",
     "attribute",
+    "VLMInput",
 ]
 
 
@@ -17,6 +19,7 @@ def __getattr__(name):
         "attribute": ("circuit_tracer.attribution.attribute", "attribute"),
         "Graph": ("circuit_tracer.graph", "Graph"),
         "ReplacementModel": ("circuit_tracer.replacement_model", "ReplacementModel"),
+        "VLMInput": ("circuit_tracer.vlm_inputs", "VLMInput"),
     }
 
     if name in _lazy_imports:

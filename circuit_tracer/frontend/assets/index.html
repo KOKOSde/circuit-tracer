@@ -6,13 +6,14 @@
 
 <div class='tooltip tooltip-hidden'></div>
 <div class='nav'></div>
+<div class='input-context'></div>
 <div class='cg'></div>
+<div class='boot-marker'>booting ui…</div>
 
 <link rel='stylesheet' href='./attribution_graph/cg.css'>
 <link rel='stylesheet' href='./attribution_graph/gridsnap/gridsnap.css'>
 <link rel='stylesheet' href='./feature_examples/feature-examples.css'>
 
-<script src='https://transformer-circuits.pub/2025/attribution-graphs/static_js/lib/hotserver-client-ws.js'></script>
 <script src='https://transformer-circuits.pub/2025/attribution-graphs/static_js/lib/d3.js'></script>
 <script src='https://transformer-circuits.pub/2025/attribution-graphs/static_js/lib/jetpack_2024-07-20.js'></script>
 <script src='https://transformer-circuits.pub/2025/attribution-graphs/static_js/lib/npy_v0.js'></script>
@@ -23,6 +24,7 @@
 <script src='./feature_examples/init-feature-examples-logits.js'></script>
 <script src='./feature_examples/init-feature-examples.js'></script>
 
+<script src='./demo-data.js'></script>
 <script src='./util.js'></script>
 <script src='./attribution_graph/util-cg.js'></script>
 <script src='./attribution_graph/render-act-histogram.js'></script>
@@ -37,9 +39,128 @@
 <script src='./attribution_graph/init-cg.js'></script>
 
 <script>
+function showFatalError(message) {
+  var el = document.querySelector('.fatal-error')
+  if (!el) {
+    el = document.createElement('pre')
+    el.className = 'fatal-error'
+    document.body.prepend(el)
+  }
+  el.textContent = message
+}
+
+window.addEventListener('error', function(ev) {
+  showFatalError(`JS error: ${ev.message}\n${ev.filename || ''}:${ev.lineno || ''}:${ev.colno || ''}`)
+})
+
+window.addEventListener('unhandledrejection', function(ev) {
+  var reason = ev.reason && (ev.reason.stack || ev.reason.message || String(ev.reason))
+  showFatalError(`Unhandled promise rejection:\n${reason || ev.reason}`)
+})
+
+function markBoot(message) {
+  var el = document.querySelector('.boot-marker')
+  if (el) el.textContent = message
+}
+
+window.featureHeatmapUi = {
+  currentSlug: null,
+  currentMetadata: null,
+  imageSel: null,
+  titleSel: null,
+}
+
+window.firstTokenAttentionUi = {
+  currentSlug: null,
+  currentMetadata: null,
+  imageSel: null,
+  titleSel: null,
+  selectSel: null,
+}
+
+window.graphImageUi = {
+  imageSel: null,
+  cardSel: null,
+}
+
+function canonicalFeatureKeyFromNode(node) {
+  if (!node || !node.nodeId) return null
+  var parts = String(node.nodeId).split('_')
+  if (parts.length < 2) return null
+  return `${parts[0]}:${parts[1]}`
+}
+
+function featureOverlaySrc(path) {
+  return path ? `/input_image?path=${encodeURIComponent(path)}&v=${Date.now()}` : null
+}
+
+function formatTokenProb(entry) {
+  if (!entry) return ''
+  var token = entry.token_text || ''
+  return `${token} (${(+entry.prob).toFixed(3)})`
+}
+
+function updateFirstTokenAttentionCard(selectedKey) {
+  var ui = window.firstTokenAttentionUi
+  if (!ui.imageSel || !ui.titleSel || !ui.currentMetadata) return
+  var meta = ui.currentMetadata.first_token_attention || {}
+  var overlayPaths = meta.overlay_paths || {}
+  var key = selectedKey || meta.default_key || 'all'
+  if (!overlayPaths[key]) key = meta.default_key || Object.keys(overlayPaths)[0]
+  var path = overlayPaths[key]
+  ui.imageSel
+    .attr('src', featureOverlaySrc(path) || '')
+    .style('display', path ? 'block' : 'none')
+  var layerText = key === 'all' ? 'all attention layers' : `layer ${key}`
+  var tokenText = meta.first_token_text ? ` for first token ${meta.first_token_text}` : ''
+  ui.titleSel.text(`First-token attention: ${layerText}${tokenText}`)
+}
+
+function updateFeatureHeatmapCard(node) {
+  var ui = window.featureHeatmapUi
+  if (!ui.imageSel || !ui.titleSel) return
+
+  var metadata = ui.currentMetadata || {}
+  var featureHeatmaps = metadata.feature_heatmaps || {}
+  var key = canonicalFeatureKeyFromNode(node)
+  var entry = key ? featureHeatmaps[key] : null
+
+  if (!entry) {
+    var defaultPath = metadata.default_feature_overlay_path || metadata.default_attention_overlay_path
+    ui.imageSel
+      .attr('src', featureOverlaySrc(defaultPath) || '')
+      .style('display', defaultPath ? 'block' : 'none')
+    ui.titleSel.text('Hover a feature to preview its spatial map')
+    return
+  }
+
+  ui.imageSel
+    .attr('src', featureOverlaySrc(entry.overlay_path) || '')
+    .style('display', entry.overlay_path ? 'block' : 'none')
+
+  ui.titleSel.text(entry.display_name || `L${entry.layer} F${entry.feature_idx}`)
+}
+
+function updateGraphImageStrip(metadata) {
+  var ui = window.graphImageUi
+  if (!ui.cardSel || !ui.imageSel) return
+  var rawPath = metadata && (metadata.raw_input_image_path || metadata.image_path)
+  ui.cardSel.style('display', rawPath ? 'block' : 'none')
+  ui.imageSel
+    .attr('src', featureOverlaySrc(rawPath) || '')
+    .style('display', rawPath ? 'block' : 'none')
+}
+
+window.addEventListener('circuit-tracer-hover-feature', function(ev) {
+  var ui = window.featureHeatmapUi
+  if (!ui.currentSlug || ev.detail.slug !== ui.currentSlug) return
+  updateFeatureHeatmapCard(ev.detail.node)
+})
+
 window.init = async function(){
+  markBoot('loading graph metadata…')
   window.isLocalServing = true;
-  var {graphs} = await util.getFile('./data/graph-metadata.json', false)
+  var {graphs} = await util.getFile(`./data/graph-metadata.json?v=${Date.now()}`, false)
 
   window.visState = window.visState || {
     slug: util.params.get('slug') || graphs[0].slug,
@@ -75,7 +196,7 @@ window.init = async function(){
       // Refetch graphs if local serving
       if (!window.isLocalServing) return;
 
-      var {graphs: newGraphs} = await util.getFile('./data/graph-metadata.json', false)
+      var {graphs: newGraphs} = await util.getFile(`./data/graph-metadata.json?v=${Date.now()}`, false)
       graphs = newGraphs
 
       // Rebuild the options
@@ -195,10 +316,97 @@ window.init = async function(){
       });
     });
 
-  function render() {
+  async function render() {
     var m = graphs.find(g => g.slug == visState.slug)
     if (!m) return
-    
+    var fullGraph = await util.getFile(`./graph_data/${visState.slug}.json?v=${Date.now()}`)
+    var fullMeta = fullGraph?.metadata || {}
+    window.featureHeatmapUi.currentSlug = visState.slug
+    window.featureHeatmapUi.currentMetadata = fullMeta
+    window.firstTokenAttentionUi.currentSlug = visState.slug
+    window.firstTokenAttentionUi.currentMetadata = fullMeta
+
+    var contextSel = d3.select('.input-context').html('')
+    var hasImage = m.image_path || m.image_url
+    var hasFirstTokenAttention = !!(fullMeta.first_token_attention && fullMeta.first_token_attention.overlay_paths)
+    var hasFeatureMaps = !!(fullMeta.feature_heatmaps && Object.keys(fullMeta.feature_heatmaps).length)
+    if (m.prompt || hasImage || fullMeta.model_output || hasFeatureMaps || hasFirstTokenAttention) {
+      contextSel.classed('has-content', true)
+
+      var cardsSel = contextSel.append('div.context-cards')
+
+      var promptCard = cardsSel.append('section.context-card.prompt-card')
+      promptCard.append('div.context-label').text('Prompt')
+      promptCard.append('div.context-prompt').text(m.prompt || '')
+
+      if (fullMeta.model_output) {
+        var outputCard = cardsSel.append('section.context-card.output-card')
+        outputCard.append('div.context-label').text('Model Output')
+        outputCard.append('div.context-output').text(fullMeta.model_output)
+        if (fullMeta.model_output_prob !== undefined && fullMeta.model_output_prob !== null) {
+          outputCard.append('div.context-output-prob')
+            .text(`Top-token probability: ${(+fullMeta.model_output_prob).toFixed(3)}`)
+        }
+        if (fullMeta.model_output_top_probs && fullMeta.model_output_top_probs.length) {
+          outputCard.append('div.context-output-prob')
+            .text(`Top next-token probs: ${fullMeta.model_output_top_probs.map(formatTokenProb).join('  |  ')}`)
+        }
+      }
+
+      if (hasFirstTokenAttention) {
+        var attnCard = cardsSel.append('section.context-card.feature-map-card')
+        attnCard.append('div.context-label').text('First-Token Attention')
+        var attnShell = attnCard.append('div.feature-map-shell')
+        var attnPreviewCol = attnShell.append('div.feature-map-preview-col')
+        var attnDetailCol = attnShell.append('div.feature-map-detail-col')
+        window.firstTokenAttentionUi.imageSel = attnPreviewCol.append('img.feature-map-preview')
+          .attr('alt', 'First-token attention heatmap')
+        window.firstTokenAttentionUi.titleSel = attnDetailCol.append('div.feature-map-title')
+        var selectWrap = attnDetailCol.append('div.feature-map-select-wrap')
+        selectWrap.append('label.feature-map-select-label').text('Layers')
+        window.firstTokenAttentionUi.selectSel = selectWrap.append('select.feature-map-select')
+          .on('change', function() {
+            updateFirstTokenAttentionCard(this.value)
+          })
+        var attnMeta = fullMeta.first_token_attention
+        var options = [{key: 'all', label: 'All layers'}].concat(
+          (attnMeta.available_layers || []).map(layer => ({key: String(layer), label: `Layer ${layer}`}))
+        )
+        window.firstTokenAttentionUi.selectSel.appendMany('option', options)
+          .attr('value', d => d.key)
+          .text(d => d.label)
+          .property('selected', d => d.key === (attnMeta.default_key || 'all'))
+        updateFirstTokenAttentionCard(attnMeta.default_key || 'all')
+      } else {
+        window.firstTokenAttentionUi.imageSel = null
+        window.firstTokenAttentionUi.titleSel = null
+        window.firstTokenAttentionUi.selectSel = null
+      }
+
+      if (hasFeatureMaps || fullMeta.default_attention_overlay_path || fullMeta.default_feature_overlay_path) {
+        var featureCard = cardsSel.append('section.context-card.feature-map-card')
+        featureCard.append('div.context-label').text('Hovered Feature Heatmap')
+        var shell = featureCard.append('div.feature-map-shell')
+        var previewCol = shell.append('div.feature-map-preview-col')
+        var detailCol = shell.append('div.feature-map-detail-col')
+
+        window.featureHeatmapUi.imageSel = previewCol.append('img.feature-map-preview')
+          .attr('alt', 'Hovered feature heatmap')
+        window.featureHeatmapUi.titleSel = detailCol.append('div.feature-map-title')
+        updateFeatureHeatmapCard(null)
+      } else {
+        window.featureHeatmapUi.imageSel = null
+        window.featureHeatmapUi.titleSel = null
+      }
+    } else {
+      contextSel.classed('has-content', false)
+      window.firstTokenAttentionUi.imageSel = null
+      window.firstTokenAttentionUi.titleSel = null
+      window.firstTokenAttentionUi.selectSel = null
+      window.featureHeatmapUi.imageSel = null
+      window.featureHeatmapUi.titleSel = null
+    }
+
     // Handle slider creation/removal dynamically
     if (m && typeof m.node_threshold === 'number') {
       // Create slider if it doesn't exist
@@ -271,11 +479,34 @@ window.init = async function(){
     
     initCg(d3.select('.cg'), visState.slug, options)
 
+    var graphSel = d3.select('.cg')
+    graphSel.selectAll('.graph-input-image-card').remove()
+    var rawImagePath = fullMeta.raw_input_image_path || fullMeta.image_path || m.image_path || m.image_url
+    if (rawImagePath) {
+      var imageCard = graphSel.append('section')
+        .attr('class', 'graph-input-image-card')
+      imageCard.append('div')
+        .attr('class', 'graph-input-image-label')
+        .text('Input Image')
+      window.graphImageUi.cardSel = imageCard
+      window.graphImageUi.imageSel = imageCard.append('img')
+        .attr('class', 'graph-input-image')
+        .attr('alt', 'Raw input image')
+      updateGraphImageStrip({raw_input_image_path: rawImagePath})
+    } else {
+      window.graphImageUi.cardSel = null
+      window.graphImageUi.imageSel = null
+    }
+
     selectSel.at({title: m.prompt})
     document.title = 'Attribution Graph: ' + m.prompt
   }
   render()
+  markBoot('ui ready')
 }
 
-window.init()
+Promise.resolve(window.init()).catch(function(err) {
+  showFatalError(`Init failed:\n${(err && (err.stack || err.message)) || err}`)
+  markBoot('init failed')
+})
 </script>

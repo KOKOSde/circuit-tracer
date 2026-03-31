@@ -3,11 +3,13 @@ from collections import defaultdict
 from collections.abc import Sequence
 from contextlib import contextmanager
 from functools import partial
+from pathlib import Path
 from typing import Callable, Iterator, Literal, cast
 
 import torch
 from torch import nn
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from PIL import Image
+from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 from nnsight.intervention.tracing.tracer import Barrier
 from nnsight import LanguageModel, Envoy, save, CONFIG as NNSIGHT_CONFIG
 
@@ -20,6 +22,7 @@ from circuit_tracer.utils.tl_nnsight_mapping import (
     get_mapping,
     convert_nnsight_config_to_transformerlens,
 )
+from circuit_tracer.vlm_inputs import PreparedInput, VLMInput
 
 NNSIGHT_CONFIG.APP.PYMOUNT = False
 NNSIGHT_CONFIG.APP.CROSS_INVOKER = False
@@ -61,6 +64,7 @@ class NNSightReplacementModel(LanguageModel):
     skip_transcoder: bool
     scan: str | list[str] | None
     backend: Literal["nnsight"]
+    processor: AutoProcessor | None
 
     @classmethod
     def from_config(
@@ -130,7 +134,11 @@ class NNSightReplacementModel(LanguageModel):
             else:
                 dev_entry = dev_str  # "cpu" or other accelerator names
 
-        device_map = {"": dev_entry}
+        requested_device_map = kwargs.pop("device_map", None)
+        if requested_device_map is not None:
+            device_map = requested_device_map
+        else:
+            device_map = {"": dev_entry}
 
         config = AutoConfig.from_pretrained(model_name)
         if hasattr(config, "quantization_config"):
@@ -211,6 +219,7 @@ class NNSightReplacementModel(LanguageModel):
         transcoder_set: TranscoderSet | CrossLayerTranscoder,
     ):
         self.backend = "nnsight"
+        self.processor = None
         self.eval()
         self.cfg = convert_nnsight_config_to_transformerlens(self.config)
 
@@ -229,7 +238,7 @@ class NNSightReplacementModel(LanguageModel):
         # property accessors which resolve the hooks on-demand inside the
         # appropriate trace context.
         # ------------------------------------------------------------------
-        nnsight_config = get_mapping(self.config.architectures[0])  # type: ignore
+        nnsight_config = get_mapping(self.cfg.original_architecture)
 
         self._feature_input_pattern, self._feature_input_io = nnsight_config.feature_hook_mapping[
             transcoder_set.feature_input_hook
@@ -258,17 +267,26 @@ class NNSightReplacementModel(LanguageModel):
             param.requires_grad = False
 
     def configure_gradient_flow(self, tracer):
+        def _detach_tree(value):
+            if isinstance(value, torch.Tensor):
+                return value.detach()
+            if isinstance(value, tuple):
+                return tuple(_detach_tree(v) for v in value)
+            if isinstance(value, list):
+                return [_detach_tree(v) for v in value]
+            return value
+
         with tracer.invoke():
             self.embed_location.output.requires_grad = True  # type: ignore
 
         with tracer.invoke():
             for freeze_loc in self.attention_locs:
-                freeze_loc.output = freeze_loc.output.detach()  # type: ignore
+                freeze_loc.output = _detach_tree(freeze_loc.output)  # type: ignore
 
         for layernorm_scale_locs_list in self.layernorm_scale_locs:
             with tracer.invoke():
                 for freeze_loc in layernorm_scale_locs_list:
-                    freeze_loc.output = freeze_loc.output.detach()  # type: ignore
+                    freeze_loc.output = _detach_tree(freeze_loc.output)  # type: ignore
 
     def configure_skip_connection(self, tracer, barrier=None):
         transcoders = (
@@ -359,7 +377,7 @@ class NNSightReplacementModel(LanguageModel):
 
     def get_activations(
         self,
-        inputs: str | torch.Tensor,
+        inputs: str | torch.Tensor | list[int] | VLMInput | dict,
         sparse: bool = False,
         apply_activation_function: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -377,10 +395,13 @@ class NNSightReplacementModel(LanguageModel):
         _, fetch_activations = self.get_activation_fn(
             sparse=sparse, apply_activation_function=apply_activation_function
         )
-        with torch.inference_mode(), self.trace(inputs):
-            logits, activation_cache = fetch_activations()  # type:ignore
-            logits = save(logits)  # type: ignore
-            activation_cache = save(activation_cache)  # type: ignore
+        prepared = self.prepare_inputs(inputs)
+        with torch.inference_mode():
+            with self.trace() as tracer:
+                with self.invoke_inputs(tracer, prepared.trace_inputs):
+                    logits, activation_cache = fetch_activations()  # type:ignore
+                    logits = save(logits)  # type: ignore
+                    activation_cache = save(activation_cache)  # type: ignore
 
         return logits, activation_cache
 
@@ -477,8 +498,132 @@ class NNSightReplacementModel(LanguageModel):
 
         return tokens.to(self.device)
 
+    def _get_processor(self):
+        if self.processor is None:
+            self.processor = AutoProcessor.from_pretrained(self.config._name_or_path)  # type: ignore[attr-defined]
+        return self.processor
+
+    def _load_vlm_image(self, image: str | Path | Image.Image | object) -> Image.Image | object:
+        if isinstance(image, Image.Image):
+            return image
+        if isinstance(image, (str, Path)):
+            return Image.open(image).convert("RGB")
+        return image
+
+    def _move_trace_inputs_to_device(
+        self, trace_inputs: torch.Tensor | dict[str, torch.Tensor]
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
+        if isinstance(trace_inputs, torch.Tensor):
+            return trace_inputs.to(self.device)
+        moved: dict[str, torch.Tensor] = {}
+        for key, value in trace_inputs.items():
+            if torch.is_tensor(value):
+                moved[key] = value.to(self.device)
+            else:
+                moved[key] = value
+        return moved
+
+    def _repeat_trace_inputs(
+        self, trace_inputs: torch.Tensor | dict[str, torch.Tensor], batch_size: int
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
+        if isinstance(trace_inputs, torch.Tensor):
+            return trace_inputs.expand(batch_size, -1)
+        repeated: dict[str, torch.Tensor] = {}
+        for key, value in trace_inputs.items():
+            if not torch.is_tensor(value):
+                repeated[key] = value
+                continue
+            if value.ndim == 0:
+                repeated[key] = value
+            elif value.shape[0] == 1:
+                repeats = [batch_size] + [1] * (value.ndim - 1)
+                repeated[key] = value.repeat(*repeats)
+            else:
+                repeated[key] = value
+        return repeated
+
+    def invoke_inputs(self, tracer, trace_inputs: torch.Tensor | dict[str, torch.Tensor]):
+        if isinstance(trace_inputs, dict):
+            return tracer.invoke(**trace_inputs)
+        return tracer.invoke(trace_inputs)
+
+    def prepare_inputs(
+        self, prompt: str | torch.Tensor | list[int] | VLMInput | PreparedInput | dict
+    ) -> PreparedInput:
+        if isinstance(prompt, PreparedInput):
+            return prompt
+
+        if isinstance(prompt, VLMInput):
+            return self._prepare_vlm_inputs(prompt)
+
+        if isinstance(prompt, dict):
+            if "image" not in prompt:
+                raise TypeError(
+                    "Dictionary inputs must include an 'image' key for multimodal attribution."
+                )
+            vlm_input = VLMInput(
+                prompt=str(prompt.get("prompt", "")),
+                image=prompt["image"],
+                image_url=prompt.get("image_url"),
+                metadata=dict(prompt.get("metadata", {})),
+            )
+            return self._prepare_vlm_inputs(vlm_input)
+
+        tokens = self.ensure_tokenized(prompt)
+        return PreparedInput(
+            trace_inputs=tokens,
+            input_ids=tokens,
+            prompt_text=self.tokenizer.decode(tokens),
+            input_mode="text",
+        )
+
+    def _prepare_vlm_inputs(self, prompt: VLMInput) -> PreparedInput:
+        processor = self._get_processor()
+        image_obj = self._load_vlm_image(prompt.image)
+
+        if hasattr(processor, "apply_chat_template"):
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image"},
+                        {"type": "text", "text": prompt.prompt},
+                    ],
+                }
+            ]
+            rendered_prompt = processor.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=False,
+            )
+            model_inputs = processor(
+                text=[rendered_prompt],
+                images=[image_obj],
+                return_tensors="pt",
+            )
+        else:
+            model_inputs = processor(
+                text=[prompt.prompt],
+                images=[image_obj],
+                return_tensors="pt",
+            )
+
+        trace_inputs = self._move_trace_inputs_to_device(dict(model_inputs))
+        trace_inputs["use_cache"] = False
+        input_ids = cast(torch.Tensor, trace_inputs["input_ids"]).squeeze(0)
+        image_path = str(prompt.image) if isinstance(prompt.image, (str, Path)) else None
+        return PreparedInput(
+            trace_inputs=trace_inputs,
+            input_ids=input_ids,
+            prompt_text=prompt.prompt,
+            input_mode="multimodal",
+            image_path=image_path,
+            image_url=prompt.image_url,
+            metadata=dict(prompt.metadata),
+        )
+
     @torch.no_grad()
-    def setup_attribution(self, inputs: str | torch.Tensor):
+    def setup_attribution(self, inputs: str | torch.Tensor | list[int] | VLMInput | dict):
         """Precomputes the transcoder activations and error vectors, saving them and the
         token embeddings.
 
@@ -487,10 +632,8 @@ class NNSightReplacementModel(LanguageModel):
                 batching) for now
         """
 
-        if isinstance(inputs, str):
-            tokens = self.ensure_tokenized(inputs)
-        else:
-            tokens = inputs.squeeze()
+        prepared = self.prepare_inputs(inputs)
+        tokens = prepared.input_ids
 
         assert isinstance(tokens, torch.Tensor), "Tokens must be a tensor"
         assert tokens.ndim == 1, "Tokens must be a 1D tensor"
@@ -500,22 +643,23 @@ class NNSightReplacementModel(LanguageModel):
 
         transcoders = self.transcoders
 
-        with self.trace(tokens):
-            mlp_in_cache, mlp_out_cache = [], []
-            for feature_input_loc, feature_output_loc in zip(
-                self.feature_input_locs, self.feature_output_locs
-            ):
-                mlp_in_cache.append(feature_input_loc.output)
+        with self.trace() as tracer:
+            with self.invoke_inputs(tracer, prepared.trace_inputs):
+                mlp_in_cache, mlp_out_cache = [], []
+                for feature_input_loc, feature_output_loc in zip(
+                    self.feature_input_locs, self.feature_output_locs
+                ):
+                    mlp_in_cache.append(feature_input_loc.output)
 
-                # we expect a dummy dimension 0, but GPT-OSS doesn't have one, so we add it.
-                y = feature_output_loc.output
-                if y.ndim == 2:
-                    y = y.unsqueeze(0)  # type: ignore
-                mlp_out_cache.append(y)
+                    # we expect a dummy dimension 0, but GPT-OSS doesn't have one, so we add it.
+                    y = feature_output_loc.output
+                    if y.ndim == 2:
+                        y = y.unsqueeze(0)  # type: ignore
+                    mlp_out_cache.append(y)
 
-            mlp_in_cache = save(torch.cat(mlp_in_cache, dim=0))  # type: ignore
-            mlp_out_cache = save(torch.cat(mlp_out_cache, dim=0))  # type: ignore
-            logits = save(self.output.logits)
+                mlp_in_cache = save(torch.cat(mlp_in_cache, dim=0))  # type: ignore
+                mlp_out_cache = save(torch.cat(mlp_out_cache, dim=0))  # type: ignore
+                logits = save(self.output.logits)
 
         attribution_data = transcoders.compute_attribution_components(
             mlp_in_cache, self.zero_positions
@@ -541,7 +685,9 @@ class NNSightReplacementModel(LanguageModel):
         )
 
     def setup_intervention_with_freeze(
-        self, inputs: str | torch.Tensor, constrained_layers: range | None = None
+        self,
+        inputs: str | torch.Tensor | list[int] | VLMInput | dict,
+        constrained_layers: range | None = None,
     ) -> tuple[torch.Tensor, list[Callable]]:
         """Sets up an intervention with either frozen attention + LayerNorm(default) or frozen
         attention, LayerNorm, and MLPs, for constrained layers
@@ -577,8 +723,10 @@ class NNSightReplacementModel(LanguageModel):
         skip_transcoder = self.skip_transcoder
 
         # get transcoder activations and values to freeze to
+        prepared = self.prepare_inputs(inputs)
+
         with self.trace() as tracer:
-            with tracer.invoke(inputs):
+            with self.invoke_inputs(tracer, prepared.trace_inputs):
                 activation_fn()  # type:ignore
             dict_to_freeze = save(get_locs_to_freeze())  # type: ignore
             for freeze_loc_name, loc_type_to_freeze in get_locs_to_freeze().items():
@@ -671,7 +819,7 @@ class NNSightReplacementModel(LanguageModel):
         elif original_activations is not None:
             n_pos = original_activations.size(1)
         else:
-            n_pos = len(self.tokenizer(inputs).input_ids)
+            n_pos = self.prepare_inputs(inputs).input_ids.shape[0]
 
         layer_deltas = torch.zeros(
             [self.cfg.n_layers, n_pos, self.cfg.d_model],
@@ -740,7 +888,7 @@ class NNSightReplacementModel(LanguageModel):
     @torch.no_grad
     def feature_intervention(
         self,
-        inputs: str | torch.Tensor,
+        inputs: str | torch.Tensor | list[int] | VLMInput | dict,
         interventions: Sequence[Intervention],
         constrained_layers: range | None = None,
         freeze_attention: bool = True,
@@ -790,11 +938,13 @@ class NNSightReplacementModel(LanguageModel):
 
         activation_layers = None if return_activations else sorted(list(intervention_layers))  # type:ignore
 
+        prepared = self.prepare_inputs(inputs)
+
         with self.trace() as tracer:
             activation_barrier = None if constrained_layers else tracer.barrier(2)
             direct_effects_barrier = tracer.barrier(2) if constrained_layers else None
 
-            with tracer.invoke(inputs):
+            with self.invoke_inputs(tracer, prepared.trace_inputs):
                 _, activation_cache = activation_fn(
                     barrier=activation_barrier,  # type:ignore
                     barrier_layers=intervention_layers,
@@ -842,7 +992,7 @@ class NNSightReplacementModel(LanguageModel):
     @torch.no_grad
     def feature_intervention_generate(
         self,
-        inputs: str | torch.Tensor,
+        inputs: str | torch.Tensor | list[int] | VLMInput | dict,
         interventions: Sequence[Intervention],
         constrained_layers: range | None = None,
         freeze_attention: bool = True,
@@ -884,6 +1034,7 @@ class NNSightReplacementModel(LanguageModel):
         # remove verbose kwarg, which is valid for TL models but not NNsight ones.
         kwargs.pop("verbose", None)
 
+        prepared = self.prepare_inputs(inputs)
         tokenizer = self.tokenizer
         converted_interventions = self._convert_open_ended_interventions(interventions)
 
@@ -914,11 +1065,18 @@ class NNSightReplacementModel(LanguageModel):
 
         activation_cache = [None]
 
-        with self.generate(**kwargs) as tracer:
+        generate_kwargs = dict(kwargs)
+        if isinstance(prepared.trace_inputs, dict):
+            for key, value in prepared.trace_inputs.items():
+                generate_kwargs.setdefault(key, value)
+        else:
+            generate_kwargs.setdefault("input_ids", prepared.trace_inputs)
+
+        with self.generate(**generate_kwargs) as tracer:
             activation_barrier = tracer.barrier(2)
             direct_effects_barrier = tracer.barrier(2) if constrained_layers else None
 
-            with tracer.invoke(inputs):
+            with tracer.invoke():
                 with tracer.iter[:] as act_idx:
                     current_intervention_layers = (
                         intervention_layers if act_idx == 0 else converted_intervention_layers
@@ -1001,7 +1159,18 @@ class NNSightReplacementModel(LanguageModel):
     def attention_locs(self) -> Iterator[nn.Module]:
         """Dynamically resolve the attention pattern hook locations for every layer."""
         for layer in range(self.cfg.n_layers):  # type: ignore
-            yield self._resolve_attr(self, self._attention_pattern.format(layer=layer))  # type: ignore
+            patterns = self._attention_pattern
+            if isinstance(patterns, str):
+                patterns = [patterns]
+            last_error = None
+            for pattern in patterns:
+                try:
+                    yield self._resolve_attr(self, pattern.format(layer=layer))  # type: ignore
+                    break
+                except AttributeError as exc:
+                    last_error = exc
+            else:
+                raise last_error  # type: ignore[misc]
 
     @property
     def layernorm_scale_locs(self) -> list[Iterator[nn.Module]]:

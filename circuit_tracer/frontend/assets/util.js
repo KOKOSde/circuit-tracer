@@ -42,6 +42,21 @@ window.util = (function () {
     // Cache storage 
     var __datacache = window.__datacache = window.__datacache || {}
 
+    if (window.__embeddedGraphMetadata && path.startsWith('./data/graph-metadata.json')) {
+      return window.__embeddedGraphMetadata
+    }
+
+    if (window.__embeddedGraphData && path.startsWith('./graph_data/')) {
+      var relPath = path.replace('./graph_data/', '').split('?')[0]
+      var fullPath = './graph_data/' + relPath
+      if (window.__embeddedGraphData[relPath]) {
+        return window.__embeddedGraphData[relPath]
+      }
+      if (window.__embeddedGraphData[fullPath]) {
+        return window.__embeddedGraphData[fullPath]
+      }
+    }
+
     if (path.startsWith('./features/')) {
       path = path.replace('./features/', 'https://d1fk9w8oratjix.cloudfront.net/features/')
     }

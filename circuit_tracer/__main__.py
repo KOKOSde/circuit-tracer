@@ -3,6 +3,7 @@ import logging
 import os
 import time
 import warnings
+from pathlib import Path
 
 
 def main():
@@ -39,6 +40,33 @@ def main():
     )
     attr_parser.add_argument("-p", "--prompt", required=True, help="Input prompt text to analyze.")
     attr_parser.add_argument(
+        "--image",
+        type=str,
+        help="Optional local image path for multimodal attribution with VLM backends.",
+    )
+    attr_parser.add_argument(
+        "--vlm_spatial_maps",
+        action="store_true",
+        help="Generate first-token attention overlays and optional feature heatmaps for multimodal runs.",
+    )
+    attr_parser.add_argument(
+        "--feature_heatmap_transcoder_dir",
+        type=str,
+        help="Optional local Qwen PLT checkpoint directory used to generate hovered feature spatial maps.",
+    )
+    attr_parser.add_argument(
+        "--neutral_prompt",
+        type=str,
+        default="Describe what you see in this image.",
+        help="Reference prompt used when computing prompt-sensitive feature heatmaps.",
+    )
+    attr_parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Seed used for multimodal generation/attention enrichment.",
+    )
+    attr_parser.add_argument(
         "-o",
         "--graph_output_path",
         help=(
@@ -52,6 +80,20 @@ def main():
         choices=["float32", "bfloat16", "float16", "fp32", "bf16", "fp16"],
         default="float32",
         help="Data type for model weights (default: float32).",
+    )
+    attr_parser.add_argument(
+        "--device_map",
+        type=str,
+        default=None,
+        help="Optional device_map override for model loading, e.g. 'auto'.",
+    )
+    attr_parser.add_argument(
+        "--force_qwen_torch_linear_attn",
+        action="store_true",
+        help=(
+            "For Qwen3.5 models, disable the flash-linear-attention / causal-conv1d fast path "
+            "and force the built-in torch linear-attention implementation."
+        ),
     )
     attr_parser.add_argument(
         "--max_n_logits", type=int, default=10, help="Maximum number of logit nodes."
@@ -181,6 +223,9 @@ def run_attribution(args, parser):
             "(--slug and --graph_file_dir)"
         )
 
+    if args.image and args.backend != "nnsight":
+        parser.error("--image currently requires --backend nnsight")
+
     # Ensure graph output directory exists if needed
     if create_graph_files_enabled:
         os.makedirs(args.graph_file_dir, exist_ok=True)
@@ -202,6 +247,8 @@ def run_attribution(args, parser):
     logging.info(f"Generating attribution graph for model: {args.model}")
     logging.info(f"Loading model with dtype: {dtype}")
     logging.info(f'Input prompt: "{args.prompt}"')
+    if args.image:
+        logging.info(f"Input image: {args.image}")
     if args.graph_output_path:
         logging.info(f"Output will be saved to: {args.graph_output_path}")
     logging.info(
@@ -211,26 +258,56 @@ def run_attribution(args, parser):
     logging.info(f"Using batch size of {args.batch_size} for backward passes")
 
     from circuit_tracer import ReplacementModel, attribute
+    from circuit_tracer.transcoder import load_local_qwen_plt_transcoder_set
     from circuit_tracer.utils.create_graph_files import create_graph_files
     from circuit_tracer.utils.hf_utils import load_transcoder_from_hub
+    from circuit_tracer.utils.qwen_vlm_enrichment import enrich_qwen_vlm_graph
+    from circuit_tracer.vlm_inputs import VLMInput
 
-    transcoder, config = load_transcoder_from_hub(
-        args.transcoder_set,
-        dtype=dtype,
-        lazy_encoder=args.lazy_encoder,
-        lazy_decoder=args.lazy_decoder,
-    )
-    args.model = args.model or config.get("model_name", None)
-    if not args.model:
-        parser.error("--model must be specified when not provided in transcoder config")
+    if args.force_qwen_torch_linear_attn and args.model and "qwen3.5" in args.model.lower():
+        import transformers.models.qwen3_5.modeling_qwen3_5 as qwen3_5_modeling
+
+        qwen3_5_modeling.chunk_gated_delta_rule = None
+        qwen3_5_modeling.fused_recurrent_gated_delta_rule = None
+        qwen3_5_modeling.causal_conv1d_fn = None
+        qwen3_5_modeling.causal_conv1d_update = None
+        qwen3_5_modeling.FusedRMSNormGated = None
+        logging.info("Forced Qwen3.5 torch linear-attention fallback for official attribution run")
+
+    transcoder_arg = Path(args.transcoder_set)
+    if transcoder_arg.exists():
+        if not args.model:
+            parser.error("--model must be specified when using a local transcoder directory")
+        transcoder = load_local_qwen_plt_transcoder_set(
+            str(transcoder_arg),
+            attribution_topk=16,
+            device=torch.device("cpu"),
+            dtype=dtype,
+            allow_missing=True,
+        )
+    else:
+        transcoder, config = load_transcoder_from_hub(
+            args.transcoder_set,
+            dtype=dtype,
+            lazy_encoder=args.lazy_encoder,
+            lazy_decoder=args.lazy_decoder,
+        )
+        args.model = args.model or config.get("model_name", None)
+        if not args.model:
+            parser.error("--model must be specified when not provided in transcoder config")
+
+    model_load_kwargs = {}
+    if args.device_map:
+        model_load_kwargs["device_map"] = {"": "cpu"} if args.device_map == "cpu" else args.device_map
 
     model_instance = ReplacementModel.from_pretrained_and_transcoders(
-        args.model, transcoder, dtype=dtype, backend=args.backend
+        args.model, transcoder, dtype=dtype, backend=args.backend, **model_load_kwargs
     )
 
     logging.info("Running attribution...")
+    prompt_input = args.prompt if not args.image else VLMInput(prompt=args.prompt, image=args.image)
     graph = attribute(
-        prompt=args.prompt,
+        prompt=prompt_input,
         model=model_instance,  # type:ignore
         max_n_logits=args.max_n_logits,
         desired_logit_prob=args.desired_logit_prob,
@@ -257,6 +334,22 @@ def run_attribution(args, parser):
             edge_threshold=args.edge_threshold,
         )
         logging.info(f"Graph JSON files written to {args.graph_file_dir}")
+        if args.image and args.vlm_spatial_maps:
+            graph_json_path = os.path.join(args.graph_file_dir, f"{args.slug}.json")
+            feature_dir = args.feature_heatmap_transcoder_dir
+            if feature_dir is None and transcoder_arg.exists():
+                feature_dir = str(transcoder_arg)
+            logging.info("Generating multimodal spatial overlays...")
+            summary = enrich_qwen_vlm_graph(
+                model_id=args.model,
+                prompt=args.prompt,
+                image_path=args.image,
+                graph_json_path=graph_json_path,
+                transcoder_dir=feature_dir,
+                neutral_prompt=args.neutral_prompt,
+                seed=args.seed,
+            )
+            logging.info(f"Multimodal overlays written: {summary}")
 
 
 def run_server(args):

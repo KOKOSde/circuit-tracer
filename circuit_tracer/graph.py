@@ -27,6 +27,7 @@ class Graph:
     vocab_size: int
     cfg: UnifiedConfig
     scan: str | list[str] | None
+    input_metadata: dict[str, str] | None
     n_pos: int
 
     def __init__(
@@ -42,6 +43,7 @@ class Graph:
         logit_probabilities: torch.Tensor,
         scan: str | list[str] | None = None,
         vocab_size: int | None = None,
+        input_metadata: dict[str, str] | None = None,
     ):
         """
         A graph object containing the adjacency matrix describing the direct effect of each
@@ -86,6 +88,7 @@ class Graph:
         if scan is None:
             print("Graph loaded without scan to identify it. Uploading will not be possible.")
         self.scan = scan
+        self.input_metadata = input_metadata
         self.selected_features = selected_features
         self.activation_values = activation_values
 
@@ -150,6 +153,7 @@ class Graph:
             "selected_features": self.selected_features,
             "activation_values": self.activation_values,
             "scan": self.scan,
+            "input_metadata": self.input_metadata,
         }
         torch.save(d, path)
 

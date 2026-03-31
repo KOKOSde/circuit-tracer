@@ -61,7 +61,11 @@ window.initCg = async function (sel, slug, {clickedId, clickedIdCb, isModal, isG
   var renderAll = util.initRenderAll(['hClerpUpdate', 'clickedId', 'hiddenIds', 'pinnedIds', 'linkType', 'isShowAllLinks', 'features', 'isSyncEnabled', 'shouldSortByWeight', 'hoveredId'])
 
   function colorNodes() {
-    data.nodes.forEach(d => d.nodeColor = '#fff')
+    data.nodes.forEach(d => {
+      if (d.feature_type == 'vision embedding') d.nodeColor = '#b9ecff'
+      else if (d.feature_type == 'logit') d.nodeColor = '#f2efe7'
+      else d.nodeColor = '#fff'
+    })
   }
   colorNodes()
 
@@ -94,6 +98,14 @@ window.initCg = async function (sel, slug, {clickedId, clickedIdCb, isModal, isG
     var hoveredNodes = data.nodes.filter(n => n.featureId == visState.hoveredId)
     var node = d3.sort(hoveredNodes, d => Math.abs(d.ctx_idx - targetCtxIdx))[0]
     visState.hoveredNodeId = node?.nodeId
+    window.dispatchEvent(new CustomEvent('circuit-tracer-hover-feature', {
+      detail: {
+        slug,
+        hoveredId: visState.hoveredId,
+        hoveredNodeId: visState.hoveredNodeId,
+        node: node || null,
+      }
+    }))
   })
 
   // set tmpClickedLink w/ strength of all the links connected the clickedNode

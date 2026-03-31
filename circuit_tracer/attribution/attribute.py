@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal
 import torch
 
 from circuit_tracer.graph import Graph
+from circuit_tracer.vlm_inputs import VLMInput
 
 if TYPE_CHECKING:
     from circuit_tracer.attribution.targets import TargetSpec
@@ -18,7 +19,7 @@ if TYPE_CHECKING:
 
 
 def attribute(
-    prompt: str | torch.Tensor | list[int],
+    prompt: str | torch.Tensor | list[int] | VLMInput | dict,
     model: "NNSightReplacementModel | TransformerLensReplacementModel",
     *,
     attribution_targets: "Sequence[str] | Sequence[TargetSpec] | torch.Tensor | None" = None,
